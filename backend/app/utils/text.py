@@ -2,7 +2,7 @@ import re
 import unicodedata
 from typing import List
 
-STOPWORDS = {
+STOPWORDS = [
     "and",
     "or",
     "the",
@@ -24,7 +24,7 @@ STOPWORDS = {
     "that",
     "these",
     "those",
-}
+]
 
 
 def normalize_text(text: str) -> str:

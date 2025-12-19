@@ -2,37 +2,33 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, List, Tuple
 
-from app.models.schemas import IngestRequest, IngestResponse
-import logging
+import pdfplumber
+from fastapi import UploadFile
 
+from app.models.schemas import IngestResponse
 from app.services.embeddings import (
     EmbeddingProvider,
     E5EmbeddingProvider,
     HashingEmbeddingProvider,
-    OpenAIEmbeddingProvider,
 )
 from app.storage.store import LocalArtifactStore
-from app.storage.vector_store import LocalVectorStore
+from app.storage.vector_store import FaissVectorStore
 from app.utils.text import normalize_text
 
 
 class IngestService:
     def __init__(self) -> None:
         self.store = LocalArtifactStore()
-        self.vector_store = LocalVectorStore()
+        self.vector_store = FaissVectorStore(dim=384)
         provider = (IngestService._get_env_provider()).lower()
-        if provider == "openai":
-            try:
-                self.embedding_provider: EmbeddingProvider = OpenAIEmbeddingProvider()
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logging.warning("OpenAI embedding init failed, falling back to hashing: %s", exc)
-                self.embedding_provider = HashingEmbeddingProvider()
-        elif provider == "hashing":
-            self.embedding_provider = HashingEmbeddingProvider()
+        if provider == "hashing":
+            self.embedding_provider: EmbeddingProvider = HashingEmbeddingProvider()
         else:
             try:
                 self.embedding_provider = E5EmbeddingProvider()
@@ -44,40 +40,24 @@ class IngestService:
     def _get_env_provider() -> str:
         import os
 
-        return os.getenv("EMBEDDING_PROVIDER", "local")
+        return os.getenv("EMBEDDING_PROVIDER", "e5")
 
-    def ingest(self, payload: IngestRequest) -> IngestResponse:
-        structured = self.extract_latex(payload.resume_latex)
-        chunks = self.chunk(structured, payload.user_id)
-        vectors = []
-        for chunk in chunks:
-            try:
-                vec = self.embedding_provider.embed([chunk["text"]], kind="passage")[0]
-            except Exception:
-                vec = []
-            vectors.append(vec)
-        self.vector_store.upsert(
-            vectors,
-            [
-                {
-                    **chunk["metadata"],
-                    "id": chunk["id"],
-                    "namespace": chunk["metadata"]["user_id"],
-                    "text": chunk["text"],
-                }
-                for chunk in chunks
-            ],
-        )
-
+    def ingest_text(self, resume_text: str) -> IngestResponse:
+        clean_text = self._normalize_text(resume_text)
+        structured = self.extract_sections(clean_text)
+        chunks = self.chunk(structured)
+        vectors = self._embed_chunks(chunks)
+        self.vector_store.add(vectors, [c["metadata"] for c in chunks])
         audit = {
-            "user_id": payload.user_id,
-            "chunks_created": len(chunks),
+            "ingest_type": "text",
+            "pages_parsed": None,
             "sections": list(structured.keys()),
+            "chunks_created": len(chunks),
             "embedding_model": self.embedding_provider.name,
+            "vector_store": "faiss",
             "timestamp": time.time(),
         }
-        self.store.save_json(payload.user_id, "profile_ingest_audit", audit)
-
+        self.store.save_json("profile", "profile_ingest_audit", audit)
         return IngestResponse(
             status="success",
             chunks_created=len(chunks),
@@ -85,139 +65,137 @@ class IngestService:
             embedding_provider=self.embedding_provider.name,
         )
 
-    def extract_latex(self, latex: str) -> Dict[str, List[str]]:
-        # remove comments
-        latex = re.sub(r"%.*", "", latex)
-        # focus between \begin{document} and \end{document}
-        match = re.search(r"\\begin{document}(.*)\\end{document}", latex, re.S)
-        content = match.group(1) if match else latex
-        sections = {"skills": [], "experience": [], "projects": [], "education": []}
-
-        # skills section: items after \section{Technical Skills}
-        skills_match = re.search(r"\\section{Technical Skills}(.*?)(\\section{Work Experience}|\\section{Projects})", content, re.S)
-        if skills_match:
-            skills_block = skills_match.group(1)
-            for line in re.findall(r"\\item\s+([^\\]+)", skills_block):
-                sections["skills"].append(normalize_text(line.strip()))
-
-        # experience: parse resumeSubheading blocks
-        exp_blocks = re.split(r"\\resumeSubheading", content)
-        for block in exp_blocks[1:]:
-            header_match = re.match(r"\s*{([^}]*)}{([^}]*)}{([^}]*)}{([^}]*)}", block, re.S)
-            if not header_match:
-                continue
-            company, dates, role, location = [normalize_text(h) for h in header_match.groups()]
-            bullets = re.findall(r"\\resumeItem{([^}]*)}", block)
-            bullet_texts = [normalize_text(b) for b in bullets]
-            if company:
-                sections["experience"].append(
-                    {"company": company, "role": role, "dates": dates, "location": location, "bullets": bullet_texts}
-                )
-
-        # projects
-        proj_blocks = re.split(r"\\resumeProjectHeading", content)
-        for block in proj_blocks[1:]:
-            header_match = re.match(r"\s*{([^}]*)}{[^}]*}", block, re.S)
-            if not header_match:
-                continue
-            title = normalize_text(header_match.group(1))
-            bullets = re.findall(r"\\resumeItem{([^}]*)}", block)
-            bullet_texts = [normalize_text(b) for b in bullets]
-            if title:
-                sections["projects"].append({"project": title, "bullets": bullet_texts})
-
-        # education
-        edu_blocks = re.findall(
-            r"\\resumeUniSubheading\s*{([^}]*)}{([^}]*)}{([^}]*)}{([^}]*)}{([^}]*)}", content, re.S
+    def ingest_pdf(self, file: UploadFile) -> IngestResponse:
+        if file.content_type != "application/pdf":
+            raise ValueError("Only application/pdf is supported")
+        pdf_bytes = file.file.read()
+        text, pages = self._extract_pdf_text(pdf_bytes)
+        clean_text = self._normalize_text(text)
+        structured = self.extract_sections(clean_text)
+        chunks = self.chunk(structured)
+        vectors = self._embed_chunks(chunks)
+        self.vector_store.add(vectors, [c["metadata"] for c in chunks])
+        audit = {
+            "ingest_type": "pdf",
+            "pages_parsed": pages,
+            "sections": list(structured.keys()),
+            "chunks_created": len(chunks),
+            "embedding_model": self.embedding_provider.name,
+            "vector_store": "faiss",
+            "timestamp": time.time(),
+            "source_bytes": len(pdf_bytes),
+        }
+        self.store.save_json("profile", "profile_ingest_audit", audit)
+        return IngestResponse(
+            status="success",
+            chunks_created=len(chunks),
+            sections=list(structured.keys()),
+            embedding_provider=self.embedding_provider.name,
         )
-        for edu in edu_blocks:
-            university, dates, degree, location, gpa = [normalize_text(e) for e in edu]
-            sections["education"].append({"school": university, "degree": degree, "dates": dates, "location": location, "gpa": gpa})
 
+    def _extract_pdf_text(self, data: bytes) -> Tuple[str, int]:
+        with pdfplumber.open(Path("/tmp/_resume_ingest.pdf")) as _:
+            pass
+        tmp = Path("/tmp/resume_ingest.pdf")
+        tmp.write_bytes(data)
+        pages_text = []
+        with pdfplumber.open(str(tmp)) as pdf:
+            for page in pdf.pages:
+                pages_text.append(page.extract_text() or "")
+        tmp.unlink(missing_ok=True)
+        return "
+".join(pages_text), len(pages_text)
+
+    def _normalize_text(self, text: str) -> str:
+        text = text.replace("•", "-")
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
+    def extract_sections(self, text: str) -> Dict[str, List[str]]:
+        sections = {"experience": [], "projects": [], "skills": [], "education": [], "certifications": []}
+        current = None
+        lines = text.split("
+")
+        for line in lines:
+            l = line.strip()
+            header = l.lower()
+            if re.match(r"experience|work experience", header):
+                current = "experience"; continue
+            if re.match(r"projects?", header):
+                current = "projects"; continue
+            if re.match(r"skills?", header):
+                current = "skills"; continue
+            if re.match(r"education", header):
+                current = "education"; continue
+            if re.match(r"certifications?", header):
+                current = "certifications"; continue
+            if current:
+                sections[current].append(l)
         return sections
 
-    def chunk(self, structured: Dict[str, List[str]], user_id: str) -> List[Dict]:
+    def chunk(self, structured: Dict[str, List[str]]) -> List[Dict]:
         chunks: List[Dict] = []
         current_year = time.localtime().tm_year
 
-        def recency(date_str: str) -> float:
-            years = re.findall(r"(20\d{2}|19\d{2})", date_str)
+        def recency(line: str) -> float:
+            years = re.findall(r"(20\d{2}|19\d{2})", line)
             if not years:
                 return 0.5
             end_year = max(int(y) for y in years)
             diff = max(0, current_year - end_year)
             return 1.0 / (1 + diff)
 
-        # skills
-        if isinstance(structured.get("skills"), list):
-            for skill in structured["skills"]:
-                text = skill
-                meta = {
-                    "user_id": user_id,
-                    "section": "skills",
-                    "company": "",
-                    "role": "",
-                    "project": "",
-                    "start_date": "",
-                    "end_date": "",
-                    "seniority": "mid",
-                    "recency_score": 1.0,
-                }
-                chunks.append(self._make_chunk(text, meta))
-
-        # experience
-        for exp in structured.get("experience", []):
-            text = f"{exp.get('company','')} | {exp.get('role','')} | {exp.get('dates','')}. " + " ".join(
-                exp.get("bullets", [])
-            )
+        for line in structured.get("experience", []):
+            if not line:
+                continue
             meta = {
-                "user_id": user_id,
                 "section": "experience",
-                "company": exp.get("company", ""),
-                "role": exp.get("role", ""),
-                "project": "",
-                "start_date": "",
-                "end_date": exp.get("dates", ""),
+                "title": line[:80],
+                "recency_score": recency(line),
                 "seniority": "mid",
-                "recency_score": recency(exp.get("dates", "")),
+                "text": normalize_text(line),
             }
-            chunks.append(self._make_chunk(text, meta))
+            chunks.append(self._make_chunk(line, meta))
 
-        # projects
-        for proj in structured.get("projects", []):
-            text = f"{proj.get('project','')}. " + " ".join(proj.get("bullets", []))
+        for line in structured.get("projects", []):
+            if not line:
+                continue
             meta = {
-                "user_id": user_id,
                 "section": "projects",
-                "company": "",
-                "role": "",
-                "project": proj.get("project", ""),
-                "start_date": "",
-                "end_date": "",
-                "seniority": "mid",
+                "title": line[:80],
                 "recency_score": 0.8,
-            }
-            chunks.append(self._make_chunk(text, meta))
-
-        # education
-        for edu in structured.get("education", []):
-            text = f"{edu.get('school','')} | {edu.get('degree','')} | {edu.get('dates','')} | {edu.get('location','')}"
-            meta = {
-                "user_id": user_id,
-                "section": "education",
-                "company": "",
-                "role": "",
-                "project": "",
-                "start_date": "",
-                "end_date": edu.get("dates", ""),
                 "seniority": "mid",
-                "recency_score": recency(edu.get("dates", "")),
+                "text": normalize_text(line),
             }
-            chunks.append(self._make_chunk(text, meta))
+            chunks.append(self._make_chunk(line, meta))
+
+        if structured.get("skills"):
+            skills_text = " ".join(structured["skills"])
+            meta = {"section": "skills", "title": "skills", "recency_score": 1.0, "seniority": "mid", "text": normalize_text(skills_text)}
+            chunks.append(self._make_chunk(skills_text, meta))
+
+        for line in structured.get("education", []):
+            if not line:
+                continue
+            meta = {
+                "section": "education",
+                "title": line[:80],
+                "recency_score": recency(line),
+                "seniority": "mid",
+                "text": normalize_text(line),
+            }
+            chunks.append(self._make_chunk(line, meta))
 
         return chunks
 
     def _make_chunk(self, text: str, metadata: Dict) -> Dict:
         raw = f"{text}|{json.dumps(metadata, sort_keys=True)}"
         chunk_id = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        metadata = {**metadata, "id": chunk_id}
         return {"id": chunk_id, "text": text, "metadata": metadata}
+
+    def _embed_chunks(self, chunks: List[Dict]) -> List[List[float]]:
+        if not chunks:
+            return []
+        texts = ["passage: " + normalize_text(c["text"]) for c in chunks]
+        return self.embedding_provider.embed(texts, kind="passage")

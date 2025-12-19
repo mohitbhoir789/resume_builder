@@ -1,5 +1,6 @@
 import os
 from typing import Dict, Iterable, List, Tuple
+from pathlib import Path
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -26,13 +27,8 @@ from app.services.optimizer import Optimizer
 from app.services.renderer import Renderer
 from app.services.assembler import Assembler
 from app.storage.store import LocalArtifactStore
-from app.services.embeddings import (
-    EmbeddingProvider,
-    E5EmbeddingProvider,
-    HashingEmbeddingProvider,
-    OpenAIEmbeddingProvider,
-)
-from app.services.llm import LLMProvider, NoOpProvider, OllamaProvider
+from app.services.embeddings import EmbeddingProvider, E5EmbeddingProvider, HashingEmbeddingProvider
+from app.services.llm import LLMProvider, NoOpProvider, GeminiProvider
 from app.storage.vector_store import LocalVectorStore, VectorStore
 from app.models.schemas import AuditPayload
 
@@ -163,6 +159,8 @@ class Pipeline:
             mapping_fallback=getattr(self, "_last_mapping_fallback", None),
             llm_provider=self._last_llm_provider,
             llm_fallback=self._llm_fallback,
+            llm_latency_ms=getattr(self, "_llm_latency_ms", None),
+            llm_fallback_reason=getattr(self, "_llm_fallback_reason", None),
         )
         audit_path = self.store.save_json(run_id, "audit", audit_payload.model_dump())
 
@@ -211,13 +209,20 @@ class Pipeline:
         llm_result = {}
         self._last_llm_provider = None
         self._llm_fallback = False
+        self._llm_latency_ms = None
+        self._llm_fallback_reason = None
         if self.llm_provider:
             try:
                 llm_result = self.llm_provider.extract_keywords(text)
                 self._last_llm_provider = self.llm_provider.name
-            except Exception:  # pylint: disable=broad-exception-caught
+                self._llm_latency_ms = llm_result.pop('_latency_ms', None)
+                if not llm_result:
+                    self._llm_fallback = True
+                    self._llm_fallback_reason = 'empty_response'
+            except Exception as exc:  # pylint: disable=broad-exception-caught
                 llm_result = {}
                 self._llm_fallback = True
+                self._llm_fallback_reason = str(exc)
 
         tfidf = TfidfVectorizer(
             analyzer="word", ngram_range=(1, 2), min_df=1, stop_words=STOPWORDS, lowercase=True
@@ -403,12 +408,6 @@ class Pipeline:
         import logging
 
         provider = os.getenv("EMBEDDING_PROVIDER", settings.embedding_provider).lower()
-        if provider == "openai":
-            try:
-                return OpenAIEmbeddingProvider()
-            except Exception as exc:  # fall back if init fails
-                logging.warning("OpenAI embedding init failed, falling back to hashing: %s", exc)
-                return HashingEmbeddingProvider()
         if provider == "hashing":
             return HashingEmbeddingProvider()
         # default e5 with fallback
@@ -422,11 +421,11 @@ class Pipeline:
         import logging
 
         provider = os.getenv("LLM_PROVIDER", settings.llm_provider).lower()
-        if provider == "ollama":
+        if provider == "gemini":
             try:
-                return OllamaProvider()
+                return GeminiProvider()
             except Exception as exc:  # pylint: disable=broad-exception-caught
-                logging.warning("Ollama init failed, falling back to NoOp: %s", exc)
+                logging.warning("Gemini init failed, falling back to NoOp: %s", exc)
                 return NoOpProvider()
         return NoOpProvider()
 

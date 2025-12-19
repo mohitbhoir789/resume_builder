@@ -122,11 +122,8 @@ class AuditPayload(BaseModel):
     mapping_fallback: Optional[bool] = None
     llm_provider: Optional[str] = None
     llm_fallback: Optional[bool] = None
-
-
-class IngestRequest(BaseModel):
-    user_id: str
-    resume_latex: str
+    llm_latency_ms: Optional[int] = None
+    llm_fallback_reason: Optional[str] = None
 
 
 class IngestResponse(BaseModel):

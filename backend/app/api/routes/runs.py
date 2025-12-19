@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Response
 
 from app.services.orchestrator import Orchestrator
 
@@ -10,9 +10,8 @@ orchestrator = Orchestrator()
 
 
 @router.get("/{run_id}/artifacts", response_model=List[str])
-def list_artifacts(run_id: str, request: Request) -> List[str]:
-    user_id = getattr(request.state, "user_id", None)
-    orchestrator.ensure_owner(run_id, user_id)
+def list_artifacts(run_id: str) -> List[str]:
+
     try:
         return orchestrator.store.list_artifacts(run_id)
     except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -20,9 +19,8 @@ def list_artifacts(run_id: str, request: Request) -> List[str]:
 
 
 @router.get("/{run_id}/audit")
-def get_audit(run_id: str, request: Request) -> Response:
-    user_id = getattr(request.state, "user_id", None)
-    orchestrator.ensure_owner(run_id, user_id)
+def get_audit(run_id: str) -> Response:
+
     artifacts = orchestrator.store.list_artifacts(run_id)
     audit = [p for p in artifacts if p.endswith("audit.json")]
     if not audit:
@@ -37,9 +35,8 @@ def get_audit(run_id: str, request: Request) -> Response:
 
 
 @router.get("/{run_id}/pdf")
-def get_pdf(run_id: str, request: Request) -> Response:
-    user_id = getattr(request.state, "user_id", None)
-    orchestrator.ensure_owner(run_id, user_id)
+def get_pdf(run_id: str) -> Response:
+
     artifacts = orchestrator.store.list_artifacts(run_id)
     pdfs = [p for p in artifacts if p.endswith(".pdf")]
     if not pdfs:

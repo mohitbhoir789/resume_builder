@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException
 
 from app.models.schemas import (
     ResumeRequest,
@@ -18,24 +18,21 @@ def health() -> dict:
 
 
 @router.post("/generate", response_model=ResumeResponse)
-async def generate_resume(payload: ResumeRequest, request: Request) -> ResumeResponse:
+async def generate_resume(payload: ResumeRequest) -> ResumeResponse:
     try:
-        user_id = getattr(request.state, "user_id", None)
-        return await orchestrator.run(payload, user_id=user_id)
+        return await orchestrator.run(payload)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/score", response_model=ScoreResponse)
-async def score_resume(payload: ResumeRequest, request: Request) -> ScoreResponse:
-    user_id = getattr(request.state, "user_id", None)
-    return await orchestrator.score_only(payload, user_id=user_id)
+async def score_resume(payload: ResumeRequest) -> ScoreResponse:
+    return await orchestrator.score_only(payload)
 
 
 @router.get("/status/{run_id}", response_model=WorkflowStatus)
-async def get_status(run_id: str, request: Request) -> WorkflowStatus:
-    user_id = getattr(request.state, "user_id", None)
-    status = orchestrator.get_status(run_id, user_id=user_id)
+async def get_status(run_id: str) -> WorkflowStatus:
+    status = orchestrator.get_status(run_id)
     if not status:
         raise HTTPException(status_code=404, detail="run not found")
     return status
