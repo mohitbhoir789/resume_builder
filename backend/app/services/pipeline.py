@@ -29,7 +29,7 @@ from app.services.assembler import Assembler
 from app.storage.store import LocalArtifactStore
 from app.services.embeddings import EmbeddingProvider, E5EmbeddingProvider, HashingEmbeddingProvider
 from app.services.llm import LLMProvider, NoOpProvider, GeminiProvider
-from app.storage.vector_store import LocalVectorStore, VectorStore
+from app.storage.faiss_store import FaissVectorStore
 from app.models.schemas import AuditPayload
 
 
@@ -121,7 +121,7 @@ class Pipeline:
         self.renderer = Renderer(self.assembler, max_attempts=settings.max_render_attempts)
         self.store = LocalArtifactStore()
         self.embedding_provider = self._init_embedding_provider()
-        self.vector_store_cls = LocalVectorStore
+        self.vector_store = FaissVectorStore(dim=1024)
         self._last_mapping_provider: str | None = None
         self._last_mapping_fallback: bool | None = None
         self.llm_provider = self._init_llm_provider()
@@ -330,24 +330,18 @@ class Pipeline:
 
     def semantic_map(self, ranked_keywords: List[RankedKeyword], profile: ProfileInput) -> KeywordMapping:
         keywords = [rk.keyword for rk in ranked_keywords] or ["placeholder"]
-        profile_chunks = self._build_profile_chunks(profile)
-        chunk_texts = [c["text"] for c in profile_chunks] or ["empty profile"]
-
         matched: List[MappingEntry] = []
         partial: List[MappingEntry] = []
         missing: List[MappingEntry] = []
 
-        use_fallback = False
         thresholds = self._mapping_thresholds()
+        use_fallback = False
 
         if self.embedding_provider:
             try:
-                store: VectorStore = self.vector_store_cls()
-                chunk_vectors = self.embedding_provider.embed(chunk_texts, kind="passage")
-                store.upsert(chunk_vectors, profile_chunks)
                 keyword_vectors = self.embedding_provider.embed(keywords, kind="query")
                 for kw, vec in zip(keywords, keyword_vectors):
-                    results = store.query(vec, top_k=1)
+                    results = self.vector_store.search(vec, top_k=1)
                     if not results:
                         missing.append(MappingEntry(keyword=kw))
                         continue
@@ -365,7 +359,8 @@ class Pipeline:
             except Exception:
                 use_fallback = True
 
-        # fallback to TF-IDF
+        profile_chunks = self._build_profile_chunks(profile)
+        chunk_texts = [c["text"] for c in profile_chunks] or ["empty profile"]
         vectorizer = TfidfVectorizer(analyzer="word", ngram_range=(1, 2), stop_words=STOPWORDS, lowercase=True)
         vectorizer.fit(keywords + chunk_texts)
         keyword_vectors = vectorizer.transform(keywords)

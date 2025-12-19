@@ -5,6 +5,7 @@ import { FormEvent, useState } from "react";
 type Props = {
   apiKey: string;
   baseUrl: string;
+  profileName: string;
   jdText: string;
   setJdText: (val: string) => void;
   jobTitle: string;
@@ -20,6 +21,7 @@ type Props = {
 export default function ResumeGenerate({
   apiKey,
   baseUrl,
+  profileName,
   jdText,
   setJdText,
   jobTitle,
@@ -35,12 +37,15 @@ export default function ResumeGenerate({
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    onError("");
+    onError(null);
     setLoading(true);
     try {
+      if (!profileName.trim()) {
+        throw new Error("Please enter a profile name");
+      }
       const payload = {
         job: { title: jobTitle, company: jobCompany, location: jobLocation, description: jdText },
-        profile: { experience: [], projects: [], skills: [], education: [] },
+        profile_name: profileName,
       };
       const resp = await fetch(`${baseUrl}/resume/generate`, {
         method: "POST",
@@ -97,11 +102,14 @@ export default function ResumeGenerate({
       />
       <button
         type="submit"
-        disabled={loading}
+        disabled={loading || !profileName.trim()}
         className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
       >
         {loading ? "Generating..." : "Generate Resume"}
       </button>
+      {!profileName.trim() && (
+        <p className="text-xs text-slate-500">Enter a profile name to generate a resume.</p>
+      )}
     </form>
   );
 }

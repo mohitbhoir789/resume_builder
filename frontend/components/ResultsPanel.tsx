@@ -1,7 +1,5 @@
 "use client";
 
-"use client";
-
 type MappingEntry = { keyword: string };
 type Iteration = { iteration: number; score_before: number; score_after: number; changes: string[] };
 
@@ -65,18 +63,20 @@ export default function ResultsPanel({ result }: Props) {
       </div>
 
       <div className="flex gap-3 md:col-span-3">
-        <a
-          href={result.pdf_url}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
-        >
-          Download PDF
-        </a>
+        {result.pdf_url && (
+          <a
+            href={result.pdf_url}
+            target="_blank"
+            rel="noreferrer"
+            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
+          >
+            Download PDF
+          </a>
+        )}
         {result.run_id && (
           <>
             <a
-          href={`${result.pdf_url?.startsWith("http") ? result.pdf_url : `/runs/${result.run_id}/pdf`}`}
+              href={result.pdf_url || `/runs/${result.run_id}/pdf`}
               target="_blank"
               rel="noreferrer"
               className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300"
@@ -84,7 +84,7 @@ export default function ResultsPanel({ result }: Props) {
               View PDF
             </a>
             <a
-          href={`${result.audit_url || `/runs/${result.run_id}/audit`}`}
+              href={result.audit_url || `/runs/${result.run_id}/audit`}
               target="_blank"
               rel="noreferrer"
               className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300"

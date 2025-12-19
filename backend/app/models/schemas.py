@@ -131,11 +131,15 @@ class IngestResponse(BaseModel):
     chunks_created: int
     sections: List[str]
     embedding_provider: str
+    ingest_type: str | None = None
+    pages_parsed: int | None = None
+    profile: Optional[ProfileInput] = None
 
 
 class ResumeRequest(BaseModel):
     job: JobInput
-    profile: ProfileInput
+    profile: Optional[ProfileInput] = None
+    profile_name: Optional[str] = None
     run_id: Optional[str] = Field(None, description="Optional idempotency token")
 
 

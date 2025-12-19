@@ -1,15 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import ProfileIngest from "@/components/ProfileIngest";
 import ResumeGenerate from "@/components/ResumeGenerate";
 import ResultsPanel from "@/components/ResultsPanel";
 
 export default function Home() {
   const apiKey = useMemo(() => process.env.NEXT_PUBLIC_API_KEY || "", []);
-  const [ingestStatus, setIngestStatus] = useState<string | null>(null);
-  const [ingestSections, setIngestSections] = useState<string[]>([]);
-  const [ingestChunks, setIngestChunks] = useState<number | null>(null);
+  const [profileName, setProfileName] = useState("my_profile");
 
   const [jdText, setJdText] = useState("");
   const [jobTitle, setJobTitle] = useState("");
@@ -26,36 +23,35 @@ export default function Home() {
         <header className="mb-8 flex flex-col gap-2">
           <p className="text-sm font-semibold text-indigo-600">RAG ATS Resume Builder</p>
           <h1 className="text-3xl font-bold">Generate an ATS-optimized, one-page resume</h1>
-          <p className="text-sm text-slate-600">Backend: {baseUrl}. Using API key from environment.</p>
+          <p className="text-sm text-slate-600">Backend: {baseUrl}. Using pre-ingested profile.</p>
         </header>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">Profile Ingest (LaTeX Resume)</h2>
-            <ProfileIngest
-              apiKey={apiKey}
-              baseUrl={baseUrl}
-              onSuccess={(chunks, sections, message) => {
-                setIngestChunks(chunks);
-                setIngestSections(sections);
-                setIngestStatus(message);
-              }}
-              onError={(msg) => {
-                setError(msg);
-              }}
+        <div className="mb-6 rounded-2xl border border-blue-200 bg-blue-50 p-5 shadow-sm">
+          <h2 className="text-lg font-semibold text-blue-900 mb-3">📋 Profile Selection</h2>
+          <p className="text-sm text-blue-800 mb-3">
+            Your resume was pre-ingested using the <code className="bg-blue-100 px-2 py-1 rounded">ingest_profile.ipynb</code> notebook.
+            Select which profile to use below.
+          </p>
+          <div className="flex gap-3 items-center">
+            <label className="text-sm font-medium text-blue-900">Profile Name:</label>
+            <input
+              type="text"
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="e.g., my_profile"
+              className="flex-1 rounded-lg border border-blue-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 bg-white"
             />
-            {ingestStatus && (
-              <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                {ingestStatus} — sections: {ingestSections.join(", ")}; chunks: {ingestChunks}
-              </div>
-            )}
-          </section>
+            <span className="text-xs text-blue-700">Default: my_profile</span>
+          </div>
+        </div>
 
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-1">
           <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 className="text-lg font-semibold">Resume Generation</h2>
             <ResumeGenerate
               apiKey={apiKey}
               baseUrl={baseUrl}
+              profileName={profileName}
               jdText={jdText}
               setJdText={setJdText}
               jobTitle={jobTitle}

@@ -8,6 +8,7 @@ from app.models.schemas import (
     WorkflowStatus,
 )
 from app.services.pipeline import Pipeline
+from app.storage.profile_loader import ProfileLoader
 
 
 class Orchestrator:
@@ -18,12 +19,21 @@ class Orchestrator:
     def __init__(self) -> None:
         self.pipeline = Pipeline()
         self.store = self.pipeline.store
+        self.profile_loader = ProfileLoader()
         self.runs: Dict[str, WorkflowStatus] = {}
 
     async def run(self, payload: ResumeRequest) -> ResumeResponse:
         run_id = payload.run_id or str(uuid.uuid4())
         self.runs[run_id] = WorkflowStatus(run_id=run_id, status="running")
-        content = await self.pipeline.generate(payload.job, payload.profile, run_id)
+        
+        # Load profile from cache if profile_name is provided
+        profile = payload.profile
+        if payload.profile_name:
+            profile = self.profile_loader.load_profile(payload.profile_name)
+        elif not profile:
+            raise ValueError("Either profile or profile_name must be provided")
+        
+        content = await self.pipeline.generate(payload.job, profile, run_id)
         pdf_url = content.pdf_path or (content.renderer.pdf_path if content.renderer else f"/artifacts/{run_id}.pdf")
         self.runs[run_id] = WorkflowStatus(
             run_id=run_id, status="completed", ats_score=content.ats_score, message="ok"
@@ -48,7 +58,14 @@ class Orchestrator:
         )
 
     async def score_only(self, payload: ResumeRequest) -> ScoreResponse:
-        score = await self.pipeline.score(payload.job, payload.profile)
+        # Load profile from cache if profile_name is provided
+        profile = payload.profile
+        if payload.profile_name:
+            profile = self.profile_loader.load_profile(payload.profile_name)
+        elif not profile:
+            raise ValueError("Either profile or profile_name must be provided")
+        
+        score = await self.pipeline.score(payload.job, profile)
         return score
 
     def get_status(self, run_id: str) -> Optional[WorkflowStatus]:

@@ -1,23 +1,63 @@
-# RAG ATS Resume Generator (Starter)
+# RAG ATS Resume Generator
 
-This repo scaffolds a full-stack system for generating ATS-optimized, 1-page resumes via a RAG workflow.
+This is a full-stack system for generating ATS-optimized, 1-page resumes via a RAG workflow.
 
-## Architecture (current scaffold)
-- Frontend (Next.js 15 + Tailwind) — job/profile input, run trigger, result display.
-- Backend (FastAPI) — stubbed orchestrator + pipeline for keyword extraction, mapping, scoring, LaTeX assembly placeholder.
-- Vector DB/Embeddings — not wired yet; slots left for Pinecone/Weaviate + embedding models.
-- PDF generation — LaTeX body stub; hook to sandboxed `pdflatex` + page-count guardrail.
+## Quick Start
 
-### Data flow (stubbed)
-Client → `POST /resume/generate` → orchestrator → pipeline:
-1) Keyword extract (naive tokenizer for now)
-2) Semantic map (string contains; replace with embeddings/vector search)
-3) ATS score (coverage + penalties)
-4) LaTeX body stub (fixed sections)
-→ response returns score/keywords/gaps and stub PDF URL.
+### 1. Run Both Services
+```bash
+./start.sh
+```
 
-### Tech stack
-- Frontend: Next.js (App Router, TS), Tailwind CSS
+This starts:
+- **Frontend**: http://localhost:3000
+- **Backend**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+
+### 2. Pre-Ingest Your Resume (One-Time Setup)
+
+Use the Jupyter notebook to ingest your resume:
+
+```bash
+jupyter notebook ingest_profile.ipynb
+```
+
+In the notebook, choose one of three options:
+- **Option 1**: Load from PDF file path
+- **Option 2**: Load from URL
+- **Option 3**: Paste plaintext resume
+
+The notebook will:
+- Extract and structure your resume sections
+- Train embeddings locally
+- Save profile and embeddings to `profile_cache/` directory
+- Create a unique profile name (default: `my_profile`)
+
+### 3. Generate Optimized Resumes
+
+1. Open http://localhost:3000
+2. Enter the profile name you saved (default: `my_profile`)
+3. Fill in job details (title, company, location, description)
+4. Click "Generate Resume"
+5. Download your ATS-optimized PDF
+
+## Architecture
+
+- **Frontend** (Next.js 15 + Tailwind) — job input, resume generation, result display
+- **Backend** (FastAPI) — orchestrator, pipeline, PDF generation
+- **Embeddings** — Stored locally in `profile_cache/`
+- **PDF** — Generated via LaTeX with 1-page guardrail
+
+### Data Flow
+
+1. **Pre-ingest** (Notebook): Resume → Extract sections → Train embeddings → Save to `profile_cache/`
+2. **Generate** (Web UI): 
+   - Load saved profile by name
+   - Extract keywords from job description
+   - Map to resume content (semantic matching)
+   - Score ATS compatibility
+   - Generate LaTeX + PDF
+
 - Backend: FastAPI, Pydantic, Uvicorn
 - Testing: pytest (backend), built-in Next.js tooling (frontend)
 

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import re
 import time
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pdfplumber
 from fastapi import UploadFile
+
+try:
+    import google.genai as genai
+except ImportError:
+    # Fallback to deprecated package
+    import google.generativeai as genai
 
 from app.models.schemas import IngestResponse
 from app.services.embeddings import (
@@ -18,14 +24,14 @@ from app.services.embeddings import (
     HashingEmbeddingProvider,
 )
 from app.storage.store import LocalArtifactStore
-from app.storage.vector_store import FaissVectorStore
+from app.storage.faiss_store import FaissVectorStore
 from app.utils.text import normalize_text
 
 
 class IngestService:
     def __init__(self) -> None:
         self.store = LocalArtifactStore()
-        self.vector_store = FaissVectorStore(dim=384)
+        self.vector_store = FaissVectorStore(dim=1024)
         provider = (IngestService._get_env_provider()).lower()
         if provider == "hashing":
             self.embedding_provider: EmbeddingProvider = HashingEmbeddingProvider()
@@ -35,12 +41,23 @@ class IngestService:
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logging.warning("E5 embedding init failed, falling back to hashing: %s", exc)
                 self.embedding_provider = HashingEmbeddingProvider()
+        
+        # Initialize Gemini
+        self._init_gemini()
 
     @staticmethod
     def _get_env_provider() -> str:
         import os
 
         return os.getenv("EMBEDDING_PROVIDER", "e5")
+    
+    @staticmethod
+    def _init_gemini() -> None:
+        """Initialize Gemini API"""
+        import os
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            genai.configure(api_key=api_key)
 
     def ingest_text(self, resume_text: str) -> IngestResponse:
         clean_text = self._normalize_text(resume_text)
@@ -48,6 +65,10 @@ class IngestService:
         chunks = self.chunk(structured)
         vectors = self._embed_chunks(chunks)
         self.vector_store.add(vectors, [c["metadata"] for c in chunks])
+        
+        # Convert structured sections to ProfileInput format
+        profile = self._profile_from_structured(structured)
+        
         audit = {
             "ingest_type": "text",
             "pages_parsed": None,
@@ -63,18 +84,27 @@ class IngestService:
             chunks_created=len(chunks),
             sections=list(structured.keys()),
             embedding_provider=self.embedding_provider.name,
+            ingest_type="text",
+            pages_parsed=None,
+            profile=profile,
         )
 
     def ingest_pdf(self, file: UploadFile) -> IngestResponse:
         if file.content_type != "application/pdf":
             raise ValueError("Only application/pdf is supported")
         pdf_bytes = file.file.read()
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            raise ValueError("Invalid or empty PDF")
         text, pages = self._extract_pdf_text(pdf_bytes)
         clean_text = self._normalize_text(text)
         structured = self.extract_sections(clean_text)
         chunks = self.chunk(structured)
         vectors = self._embed_chunks(chunks)
         self.vector_store.add(vectors, [c["metadata"] for c in chunks])
+        
+        # Convert structured sections to ProfileInput format
+        profile = self._profile_from_structured(structured)
+        
         audit = {
             "ingest_type": "pdf",
             "pages_parsed": pages,
@@ -91,20 +121,20 @@ class IngestService:
             chunks_created=len(chunks),
             sections=list(structured.keys()),
             embedding_provider=self.embedding_provider.name,
+            ingest_type="pdf",
+            pages_parsed=pages,
+            profile=profile,
         )
 
     def _extract_pdf_text(self, data: bytes) -> Tuple[str, int]:
-        with pdfplumber.open(Path("/tmp/_resume_ingest.pdf")) as _:
-            pass
-        tmp = Path("/tmp/resume_ingest.pdf")
-        tmp.write_bytes(data)
-        pages_text = []
-        with pdfplumber.open(str(tmp)) as pdf:
-            for page in pdf.pages:
-                pages_text.append(page.extract_text() or "")
-        tmp.unlink(missing_ok=True)
-        return "
-".join(pages_text), len(pages_text)
+        pages_text: List[str] = []
+        try:
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                for page in pdf.pages:
+                    pages_text.append(page.extract_text() or "")
+            return "\n".join(pages_text), len(pages_text)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            raise ValueError(f"PDF parse failed: {exc}") from exc
 
     def _normalize_text(self, text: str) -> str:
         text = text.replace("•", "-")
@@ -112,24 +142,89 @@ class IngestService:
         return text.strip()
 
     def extract_sections(self, text: str) -> Dict[str, List[str]]:
+        """Use Gemini to intelligently extract resume sections"""
+        try:
+            return self._extract_sections_with_gemini(text)
+        except Exception as exc:  # Fallback to regex if Gemini fails
+            logging.warning("Gemini section extraction failed, using regex fallback: %s", exc)
+            return self._extract_sections_regex(text)
+    
+    def _extract_sections_with_gemini(self, text: str) -> Dict[str, List[str]]:
+        """Use Gemini API to extract resume sections"""
+        prompt = f"""Analyze the following resume text and extract the following sections:
+- experience (work experience/employment)
+- projects (projects/portfolio)
+- skills (technical skills, languages, tools)
+- education (degrees, universities)
+- certifications (certifications, licenses)
+
+For each section, extract all bullet points or lines as they appear in the resume.
+
+Resume text:
+{text}
+
+Return the response as JSON with this exact format:
+{{
+    "experience": ["item 1", "item 2", ...],
+    "projects": ["item 1", "item 2", ...],
+    "skills": ["item 1", "item 2", ...],
+    "education": ["item 1", "item 2", ...],
+    "certifications": ["item 1", "item 2", ...]
+}}
+
+Only include items that actually exist in the resume. Return empty arrays for missing sections."""
+
+        try:
+            model = genai.GenerativeModel('gemini-pro')
+            response = model.generate_content(prompt)
+            
+            # Parse JSON response
+            response_text = response.text.strip()
+            # Extract JSON from markdown code blocks if present
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            sections = json.loads(response_text)
+            
+            # Ensure all keys exist
+            default_sections = {"experience": [], "projects": [], "skills": [], "education": [], "certifications": []}
+            for key in default_sections:
+                if key not in sections:
+                    sections[key] = []
+                # Ensure values are lists of strings
+                if not isinstance(sections[key], list):
+                    sections[key] = [str(sections[key])]
+                else:
+                    sections[key] = [str(item).strip() for item in sections[key] if str(item).strip()]
+            
+            return sections
+        except json.JSONDecodeError as e:
+            logging.error("Failed to parse Gemini JSON response: %s", e)
+            raise ValueError("Invalid JSON response from Gemini") from e
+    
+    def _extract_sections_regex(self, text: str) -> Dict[str, List[str]]:
+        """Fallback regex-based section extraction"""
         sections = {"experience": [], "projects": [], "skills": [], "education": [], "certifications": []}
         current = None
-        lines = text.split("
-")
+        lines = text.split("\n")
         for line in lines:
             l = line.strip()
             header = l.lower()
-            if re.match(r"experience|work experience", header):
+            # Use regex search with word boundaries for more flexible matching
+            if re.search(r"^(work\s+)?experience\s*$", header):
                 current = "experience"; continue
-            if re.match(r"projects?", header):
+            if re.search(r"^projects?\s*$", header):
                 current = "projects"; continue
-            if re.match(r"skills?", header):
+            if re.search(r"^(technical\s+)?skills?\s*$", header):
                 current = "skills"; continue
-            if re.match(r"education", header):
+            if re.search(r"^education\s*$", header):
                 current = "education"; continue
-            if re.match(r"certifications?", header):
+            if re.search(r"^certifications?\s*$", header):
                 current = "certifications"; continue
-            if current:
+            # Start a new section if we see a company/school pattern (all caps line with pipes or bars)
+            if current and len(l) > 0 and l and not re.search(r"^\s*\*|-|•", l):
                 sections[current].append(l)
         return sections
 
@@ -153,7 +248,6 @@ class IngestService:
                 "title": line[:80],
                 "recency_score": recency(line),
                 "seniority": "mid",
-                "text": normalize_text(line),
             }
             chunks.append(self._make_chunk(line, meta))
 
@@ -165,13 +259,17 @@ class IngestService:
                 "title": line[:80],
                 "recency_score": 0.8,
                 "seniority": "mid",
-                "text": normalize_text(line),
             }
             chunks.append(self._make_chunk(line, meta))
 
         if structured.get("skills"):
             skills_text = " ".join(structured["skills"])
-            meta = {"section": "skills", "title": "skills", "recency_score": 1.0, "seniority": "mid", "text": normalize_text(skills_text)}
+            meta = {
+                "section": "skills",
+                "title": "skills",
+                "recency_score": 1.0,
+                "seniority": "mid",
+            }
             chunks.append(self._make_chunk(skills_text, meta))
 
         for line in structured.get("education", []):
@@ -182,7 +280,6 @@ class IngestService:
                 "title": line[:80],
                 "recency_score": recency(line),
                 "seniority": "mid",
-                "text": normalize_text(line),
             }
             chunks.append(self._make_chunk(line, meta))
 
@@ -199,3 +296,11 @@ class IngestService:
             return []
         texts = ["passage: " + normalize_text(c["text"]) for c in chunks]
         return self.embedding_provider.embed(texts, kind="passage")
+    def _profile_from_structured(self, structured: Dict[str, List[str]]) -> "ProfileInput":
+        from app.models.schemas import ProfileInput
+        return ProfileInput(
+            experience=structured.get("experience", []),
+            projects=structured.get("projects", []),
+            skills=structured.get("skills", []),
+            education=structured.get("education", []),
+        )

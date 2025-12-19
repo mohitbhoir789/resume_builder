@@ -13,4 +13,6 @@ faiss-cpu
 python-multipart
 jinja2
 loguru
+google-genai
 google-generativeai
+pdfplumber
