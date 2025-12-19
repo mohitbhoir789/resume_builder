@@ -97,12 +97,11 @@ export default function ResumeGenerate({
       />
       <button
         type="submit"
-        disabled={loading || !apiKey}
+        disabled={loading}
         className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
       >
         {loading ? "Generating..." : "Generate Resume"}
       </button>
-      {!apiKey && <p className="text-xs text-slate-500">Enter API key to enable generation.</p>}
     </form>
   );
 }

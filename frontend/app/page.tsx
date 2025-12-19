@@ -1,13 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import ApiKeyInput from "@/components/ApiKeyInput";
 import ProfileIngest from "@/components/ProfileIngest";
 import ResumeGenerate from "@/components/ResumeGenerate";
 import ResultsPanel from "@/components/ResultsPanel";
 
 export default function Home() {
-  const [apiKey, setApiKey] = useState("");
+  const apiKey = useMemo(() => process.env.NEXT_PUBLIC_API_KEY || "", []);
   const [ingestStatus, setIngestStatus] = useState<string | null>(null);
   const [ingestSections, setIngestSections] = useState<string[]>([]);
   const [ingestChunks, setIngestChunks] = useState<number | null>(null);
@@ -27,10 +26,7 @@ export default function Home() {
         <header className="mb-8 flex flex-col gap-2">
           <p className="text-sm font-semibold text-indigo-600">RAG ATS Resume Builder</p>
           <h1 className="text-3xl font-bold">Generate an ATS-optimized, one-page resume</h1>
-          <p className="text-sm text-slate-600">
-            Backend: {baseUrl}. Provide API key to call ingestion and generation endpoints.
-          </p>
-          <ApiKeyInput apiKey={apiKey} setApiKey={setApiKey} />
+          <p className="text-sm text-slate-600">Backend: {baseUrl}. Using API key from environment.</p>
         </header>
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

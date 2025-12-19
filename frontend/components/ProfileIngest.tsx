@@ -24,7 +24,7 @@ export default function ProfileIngest({ apiKey, baseUrl, onSuccess, onError }: P
           "Content-Type": "application/json",
           "x-api-key": apiKey,
         },
-        body: JSON.stringify({ user_id: "mohit_bhoir", resume_latex: latex }),
+        body: JSON.stringify({ resume_latex: latex }),
       });
       if (!resp.ok) {
         if (resp.status === 401) throw new Error("Invalid or missing API key");
@@ -52,12 +52,11 @@ export default function ProfileIngest({ apiKey, baseUrl, onSuccess, onError }: P
       />
       <button
         type="submit"
-        disabled={loading || !apiKey}
+        disabled={loading}
         className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
       >
         {loading ? "Ingesting..." : "Ingest Profile"}
       </button>
-      {!apiKey && <p className="text-xs text-slate-500">Enter API key to enable ingestion.</p>}
     </form>
   );
 }
